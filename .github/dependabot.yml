@@ -10,8 +10,6 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
     groups:
       # Batch routine updates into a single PR to cut review noise; major
       # version bumps still come as their own PRs.
@@ -28,8 +26,5 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    labels:
-      - "dependencies"
-      - "github-actions"
     commit-message:
       prefix: "ci(deps)"
