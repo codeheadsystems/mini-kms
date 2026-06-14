@@ -473,8 +473,10 @@ Stop with `Ctrl-C`; the shutdown hook zeros the root key and every KEK.
 ```bash
 export MINIKMS_API_TOKEN="…"
 C=client/build/install/client/bin/client
+A=client/build/install/client/bin/kms-admin
 
 $C --tcp 127.0.0.1:9123 health
+$A --tcp 127.0.0.1:9123 create-key --key billing
 $C --tcp 127.0.0.1:9123 generate-data-key --key billing --aad "ctx"
 $C --tcp 127.0.0.1:9123 encrypt --text "hunter2" --out s.bin           # small blob
 $C --tcp 127.0.0.1:9123 decrypt --in s.bin
