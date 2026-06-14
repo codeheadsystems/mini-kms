@@ -1,0 +1,15 @@
+# Dependency version catalog for mini-kms.
+# Crypto primitives + Argon2 come from Bouncy Castle; JSON from Jackson.
+# Everything else (AES-GCM, SecureRandom) uses the JDK's built-in JCA.
+
+[versions]
+bouncycastle = "1.81"
+jackson = "2.18.2"
+junit-jupiter = "6.0.1"
+
+[libraries]
+# Bouncy Castle provider: the Argon2id KDF (Argon2BytesGenerator) lives here.
+bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+# Jackson for the newline-delimited JSON wire protocol.
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit-jupiter" }

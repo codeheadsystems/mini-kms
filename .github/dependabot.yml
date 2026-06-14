@@ -1,0 +1,35 @@
+# Dependabot keeps dependencies and CI actions up to date by opening pull
+# requests on a schedule. See:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  # Gradle dependencies, including the gradle/libs.versions.toml version catalog
+  # (Bouncy Castle, Jackson, JUnit).
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      # Batch routine updates into a single PR to cut review noise; major
+      # version bumps still come as their own PRs.
+      gradle-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "build(deps)"
+
+  # The actions used by .github/workflows/*.yml (checkout, setup-java,
+  # setup-gradle, upload-artifact).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci(deps)"
