@@ -162,12 +162,12 @@ flowchart TD
 sequenceDiagram
     actor App as Client (data token)
     participant KMS as mini-kms server
-    Note over App,KMS: bulk data is encrypted locally; only the tiny DEK is wrapped
+    Note over App,KMS: bulk data is encrypted locally — only the tiny DEK is wrapped
     App->>KMS: GenerateDataKey(keyId="default", aad)
-    KMS->>KMS: random DEK; wrap under default's ACTIVE version
+    KMS->>KMS: random DEK, wrap under default's ACTIVE version
     KMS-->>App: plaintext DEK + wrapped DEK (kek_id = default:v2)
     App->>App: AES-256-GCM encrypt file with plaintext DEK
-    App->>App: write [ wrapped DEK | ciphertext ]  then zero the DEK
+    App->>App: write wrapped DEK + ciphertext, then zero the DEK
 ```
 
 ### Decrypt — including after rotation
