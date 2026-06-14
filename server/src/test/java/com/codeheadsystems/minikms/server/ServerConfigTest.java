@@ -74,4 +74,35 @@ class ServerConfigTest {
         new String[]{"--admin-token-file", "/etc/minikms-admin.token"}, Map.of("HOME", "/h"));
     assertEquals("/etc/minikms-admin.token", config.adminTokenFilePath().toString());
   }
+
+  @Test
+  void idleTimeoutAndMaxConnectionsHaveDefaults() {
+    final ServerConfig config = ServerConfig.resolve(new String[]{}, Map.of("HOME", "/h"));
+    assertEquals(ServerConfig.DEFAULT_IDLE_TIMEOUT_MILLIS, config.idleTimeoutMillis());
+    assertEquals(ServerConfig.DEFAULT_MAX_CONNECTIONS, config.maxConnections());
+  }
+
+  @Test
+  void idleTimeoutAndMaxConnectionsFromFlags() {
+    final ServerConfig config = ServerConfig.resolve(
+        new String[]{"--idle-timeout-ms", "5000", "--max-connections", "10"}, Map.of("HOME", "/h"));
+    assertEquals(5000, config.idleTimeoutMillis());
+    assertEquals(10, config.maxConnections());
+  }
+
+  @Test
+  void idleTimeoutAndMaxConnectionsFromEnvironment() {
+    final ServerConfig config = ServerConfig.resolve(new String[]{},
+        Map.of("MINIKMS_IDLE_TIMEOUT_MS", "1234", "MINIKMS_MAX_CONNECTIONS", "7", "HOME", "/h"));
+    assertEquals(1234, config.idleTimeoutMillis());
+    assertEquals(7, config.maxConnections());
+  }
+
+  @Test
+  void nonPositiveLimitsAreRejected() {
+    assertThrows(IllegalArgumentException.class, () ->
+        ServerConfig.resolve(new String[]{"--max-connections", "0"}, Map.of("HOME", "/h")));
+    assertThrows(IllegalArgumentException.class, () ->
+        ServerConfig.resolve(new String[]{"--idle-timeout-ms", "0"}, Map.of("HOME", "/h")));
+  }
 }

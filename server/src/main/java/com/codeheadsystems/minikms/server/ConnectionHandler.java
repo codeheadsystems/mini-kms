@@ -12,6 +12,9 @@ import java.io.OutputStream;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Services one accepted connection: a request/response loop over a single socket.
@@ -25,6 +28,12 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>Logging never includes request/response bodies, tokens, or key material —
  * only coarse lifecycle and error categories.
+ *
+ * <p>Each read of the next request is guarded by an idle-timeout watchdog: a
+ * client that connects and then stalls (sending nothing, or one byte at a time)
+ * is forcibly disconnected after {@code idleTimeoutMillis} rather than pinning the
+ * thread forever. The permit acquired for this connection by the transport is
+ * released exactly once, via {@code onClose}, when the loop ends.
  */
 final class ConnectionHandler implements Runnable {
 
@@ -37,10 +46,15 @@ final class ConnectionHandler implements Runnable {
   private final ProtocolCodec codec;
   private final KmsRequestHandler requestHandler;
   private final int maxFrameBytes;
+  private final ScheduledExecutorService idleWatchdog;
+  private final long idleTimeoutMillis;
+  private final Runnable onClose;
 
   ConnectionHandler(final InputStream in, final OutputStream out, final String peer,
                     final AutoCloseable closeable, final ProtocolCodec codec,
-                    final KmsRequestHandler requestHandler, final int maxFrameBytes) {
+                    final KmsRequestHandler requestHandler, final int maxFrameBytes,
+                    final ScheduledExecutorService idleWatchdog, final long idleTimeoutMillis,
+                    final Runnable onClose) {
     this.in = in;
     this.out = out;
     this.peer = peer;
@@ -48,6 +62,9 @@ final class ConnectionHandler implements Runnable {
     this.codec = codec;
     this.requestHandler = requestHandler;
     this.maxFrameBytes = maxFrameBytes;
+    this.idleWatchdog = idleWatchdog;
+    this.idleTimeoutMillis = idleTimeoutMillis;
+    this.onClose = onClose;
   }
 
   @Override
@@ -69,11 +86,28 @@ final class ConnectionHandler implements Runnable {
       LOG.log(Level.DEBUG, () -> "connection " + peer + " ended: " + e.getMessage());
     } finally {
       close();
+      onClose.run(); // release this connection's permit exactly once
     }
   }
 
+  /**
+   * Read the next request line, force-closing the connection if it stalls longer
+   * than the idle timeout. Closing the socket from the watchdog thread unblocks
+   * the in-progress read with an {@link IOException}, which ends the loop.
+   */
   private byte[] readNext(final BoundedLineReader reader) throws IOException {
-    return reader.readLine();
+    final ScheduledFuture<?> timeout =
+        idleWatchdog.schedule(this::closeForIdleTimeout, idleTimeoutMillis, TimeUnit.MILLISECONDS);
+    try {
+      return reader.readLine();
+    } finally {
+      timeout.cancel(false);
+    }
+  }
+
+  private void closeForIdleTimeout() {
+    LOG.log(Level.DEBUG, "closing {0}: idle timeout", peer);
+    close();
   }
 
   private KmsResponse process(final byte[] line) {

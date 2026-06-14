@@ -15,6 +15,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 
 /**
  * A Unix domain socket listener using Java 21's native
@@ -40,14 +41,16 @@ final class UnixSocketTransport implements Closeable {
   private final ServerSocketChannel channel;
   private final ExecutorService executor;
   private final ConnectionHandlerFactory factory;
+  private final Semaphore connectionLimiter;
   private volatile boolean running;
   private Thread acceptThread;
 
-  UnixSocketTransport(final Path path, final ExecutorService executor, final ConnectionHandlerFactory factory)
-      throws IOException {
+  UnixSocketTransport(final Path path, final ExecutorService executor, final ConnectionHandlerFactory factory,
+                      final Semaphore connectionLimiter) throws IOException {
     this.path = path.toAbsolutePath();
     this.executor = executor;
     this.factory = factory;
+    this.connectionLimiter = connectionLimiter;
     prepareDirectory(this.path);
     Files.deleteIfExists(this.path);
     this.channel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
@@ -80,10 +83,17 @@ final class UnixSocketTransport implements Closeable {
         }
         return;
       }
+      if (!connectionLimiter.tryAcquire()) {
+        LOG.log(Level.WARNING, "connection limit reached; rejecting unix client");
+        closeQuietly(client);
+        continue;
+      }
       try {
         executor.execute(factory.create(
-            Channels.newInputStream(client), Channels.newOutputStream(client), "unix", client));
+            Channels.newInputStream(client), Channels.newOutputStream(client), "unix", client,
+            connectionLimiter::release));
       } catch (final RuntimeException e) {
+        connectionLimiter.release(); // acquired above, but the handler never took ownership
         LOG.log(Level.WARNING, () -> "failed to start handler: " + e.getMessage());
         closeQuietly(client);
       }

@@ -48,6 +48,8 @@ public final class RootKeyRotation {
     final byte[] oldRoot = Argon2KeyDeriver.deriveMasterKey(oldPassphrase, oldSalt, metadata.argonSettings());
     try {
       verify(aesGcm, oldRoot, metadata.rootVerificationTokenBase64());
+      // Refuse to re-wrap a tampered keystore: authenticate the metadata under the old root first.
+      KeystoreIntegrity.verify(metadata, oldRoot);
     } catch (final RuntimeException e) {
       Arrays.fill(oldRoot, (byte) 0);
       throw e;
@@ -71,7 +73,7 @@ public final class RootKeyRotation {
 
       // 4. New verification token under the new root key, and persist.
       final byte[] newToken = aesGcm.encrypt(AesGcm.toKey(newRoot), LocalKeyring.VERIFICATION_CONSTANT, null);
-      final KeystoreMetadata rewritten = new KeystoreMetadata(
+      final KeystoreMetadata unsigned = new KeystoreMetadata(
           KeystoreMetadata.FORMAT_VERSION_2,
           KeystoreMetadata.KDF_ARGON2ID,
           newSettings.memoryKiB(),
@@ -79,7 +81,10 @@ public final class RootKeyRotation {
           newSettings.parallelism(),
           Base64.getEncoder().encodeToString(newSalt),
           Base64.getEncoder().encodeToString(newToken),
-          rewrappedGroups);
+          rewrappedGroups,
+          null);
+      // Re-sign under the new root key so the rewritten keystore is authenticated too.
+      final KeystoreMetadata rewritten = unsigned.withMac(KeystoreIntegrity.computeMac(unsigned, newRoot));
       Keystore.save(keystorePath, rewritten);
     } finally {
       Arrays.fill(oldRoot, (byte) 0);

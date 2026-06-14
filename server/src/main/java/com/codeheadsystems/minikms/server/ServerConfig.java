@@ -22,6 +22,8 @@ import java.util.Map;
  *   --token-file PATH       MINIKMS_API_TOKEN_FILE   file holding the API token (alt: MINIKMS_API_TOKEN env)
  *   --admin-token-file PATH MINIKMS_ADMIN_TOKEN_FILE file holding the admin token (alt: MINIKMS_ADMIN_TOKEN env)
  *   --max-frame-bytes N     MINIKMS_MAX_FRAME_BYTES  per-request size limit (default 1 MiB)
+ *   --idle-timeout-ms N     MINIKMS_IDLE_TIMEOUT_MS  drop a connection idle/stalled this long (default 30000)
+ *   --max-connections N     MINIKMS_MAX_CONNECTIONS  cap on concurrent connections (default 256)
  *   --no-tcp                                         disable the TCP listener
  *   --no-unix                                        disable the Unix listener
  * </pre>
@@ -39,6 +41,12 @@ public final class ServerConfig {
   /** Default request frame limit: 1 MiB. */
   public static final int DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
 
+  /** Default idle/stall timeout per connection: 30 seconds. */
+  public static final int DEFAULT_IDLE_TIMEOUT_MILLIS = 30_000;
+
+  /** Default cap on concurrent connections across all transports. */
+  public static final int DEFAULT_MAX_CONNECTIONS = 256;
+
   private final boolean tcpEnabled;
   private final int tcpPort;
   private final boolean unixEnabled;
@@ -47,11 +55,14 @@ public final class ServerConfig {
   private final Path tokenFilePath;
   private final Path adminTokenFilePath;
   private final int maxFrameBytes;
+  private final int idleTimeoutMillis;
+  private final int maxConnections;
   private final Argon2Settings argonSettings;
 
   ServerConfig(final boolean tcpEnabled, final int tcpPort, final boolean unixEnabled,
                final Path unixSocketPath, final Path keystorePath, final Path tokenFilePath,
-               final Path adminTokenFilePath, final int maxFrameBytes, final Argon2Settings argonSettings) {
+               final Path adminTokenFilePath, final int maxFrameBytes, final int idleTimeoutMillis,
+               final int maxConnections, final Argon2Settings argonSettings) {
     this.tcpEnabled = tcpEnabled;
     this.tcpPort = tcpPort;
     this.unixEnabled = unixEnabled;
@@ -60,6 +71,8 @@ public final class ServerConfig {
     this.tokenFilePath = tokenFilePath;
     this.adminTokenFilePath = adminTokenFilePath;
     this.maxFrameBytes = maxFrameBytes;
+    this.idleTimeoutMillis = idleTimeoutMillis;
+    this.maxConnections = maxConnections;
     this.argonSettings = argonSettings;
   }
 
@@ -81,6 +94,8 @@ public final class ServerConfig {
     String tokenFile = env.get("MINIKMS_API_TOKEN_FILE");
     String adminTokenFile = env.get("MINIKMS_ADMIN_TOKEN_FILE");
     Integer maxFrame = envInt(env, "MINIKMS_MAX_FRAME_BYTES");
+    Integer idleTimeout = envInt(env, "MINIKMS_IDLE_TIMEOUT_MS");
+    Integer maxConnections = envInt(env, "MINIKMS_MAX_CONNECTIONS");
 
     for (int i = 0; i < args.length; i++) {
       final String arg = args[i];
@@ -91,6 +106,8 @@ public final class ServerConfig {
         case "--token-file" -> tokenFile = requireValue(args, ++i, arg);
         case "--admin-token-file" -> adminTokenFile = requireValue(args, ++i, arg);
         case "--max-frame-bytes" -> maxFrame = Integer.parseInt(requireValue(args, ++i, arg));
+        case "--idle-timeout-ms" -> idleTimeout = Integer.parseInt(requireValue(args, ++i, arg));
+        case "--max-connections" -> maxConnections = Integer.parseInt(requireValue(args, ++i, arg));
         case "--no-tcp" -> tcpEnabled = false;
         case "--no-unix" -> unixEnabled = false;
         default -> throw new IllegalArgumentException("unknown argument: " + arg);
@@ -106,6 +123,15 @@ public final class ServerConfig {
       throw new IllegalArgumentException("at least one of TCP or Unix transports must be enabled");
     }
 
+    final int resolvedIdleTimeout = idleTimeout != null ? idleTimeout : DEFAULT_IDLE_TIMEOUT_MILLIS;
+    if (resolvedIdleTimeout < 1) {
+      throw new IllegalArgumentException("idle timeout must be at least 1 ms");
+    }
+    final int resolvedMaxConnections = maxConnections != null ? maxConnections : DEFAULT_MAX_CONNECTIONS;
+    if (resolvedMaxConnections < 1) {
+      throw new IllegalArgumentException("max connections must be at least 1");
+    }
+
     return new ServerConfig(
         tcpEnabled,
         tcpPort != null ? tcpPort : DEFAULT_TCP_PORT,
@@ -115,6 +141,8 @@ public final class ServerConfig {
         tokenFilePath,
         adminTokenFilePath,
         maxFrame != null ? maxFrame : DEFAULT_MAX_FRAME_BYTES,
+        resolvedIdleTimeout,
+        resolvedMaxConnections,
         Argon2Settings.defaults());
   }
 
@@ -177,6 +205,16 @@ public final class ServerConfig {
   /** @return the maximum bytes accepted for a single request line. */
   public int maxFrameBytes() {
     return maxFrameBytes;
+  }
+
+  /** @return how long a connection may stall waiting to send a request before it is dropped (ms). */
+  public int idleTimeoutMillis() {
+    return idleTimeoutMillis;
+  }
+
+  /** @return the maximum number of concurrent connections across all transports. */
+  public int maxConnections() {
+    return maxConnections;
   }
 
   /** @return the Argon2 parameters used when initializing a new keystore. */

@@ -1,4 +1,4 @@
-# mini-kms
+# Mini KMS
 
 A small, single-machine **Key Management Service** in Java that provides
 **envelope encryption** with **rotatable keys** to local services over sockets.
@@ -19,6 +19,7 @@ evolving toward a real, remote KMS.
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [Glossary](#glossary)
 - [The key hierarchy](#the-key-hierarchy)
 - [Architecture](#architecture)
 - [Data plane vs control plane](#data-plane-vs-control-plane)
@@ -57,6 +58,97 @@ mini-kms exposes an AWS-KMS-style API over local sockets:
 - **CreateKeyGroup / RotateKeyGroup / ListKeyGroups**
 - **DisableVersion / EnableVersion / DestroyVersion**
 - **change-passphrase** (offline root-key rotation)
+
+---
+
+## Glossary
+
+The terms below are used throughout this README and the code. They follow the
+same vocabulary as real systems (AWS KMS, GCP KMS, NIST) so the concepts carry
+over.
+
+### The key hierarchy
+
+- **Passphrase** — the one human-supplied secret. Everything else is derived from
+  it or protected under it; it is never stored.
+- **KDF (key derivation function)** — turns a passphrase into a key. mini-kms uses
+  **Argon2id**.
+- **Argon2id** — a *memory-hard* password-hashing KDF. "Memory-hard" means
+  deriving the key deliberately costs a tunable amount of RAM and time, which is
+  what makes brute-forcing a stolen keystore expensive.
+- **Salt** — per-install random bytes mixed into the KDF so the same passphrase
+  yields a different key on every install, defeating precomputation.
+- **Root key (RK) / master key** — the 256-bit key derived from the passphrase via
+  Argon2id. It lives in memory only and *wraps* the keyring. ("Master key" is the
+  generic term; "root key" is what this project calls its specific one.)
+- **KEK (key-encryption key)** — a key whose only job is to encrypt (*wrap*) other
+  keys, never bulk data. Each key group's versions are KEKs, stored wrapped under
+  the root key.
+- **DEK (data-encryption key)** — a per-operation key that encrypts your actual
+  data. It is generated fresh, used, and then wrapped under a KEK; the plaintext
+  DEK is zeroed after use.
+- **Key group** — a named, addressable key (AWS *KeyId* / GCP *CryptoKey*), e.g.
+  `default` or `billing`. Holds a series of versions and rotates independently.
+- **KEK version** — one rotation of a group's key material (AWS *key material
+  version* / GCP *CryptoKeyVersion*). Exactly one version per group is `ACTIVE`
+  (used for new encryption); older ones stay `ENABLED` for decrypt only.
+- **kek_id** — the `(group, version)` identifier recorded *inside* every
+  ciphertext, so decryption can always find the exact KEK version that wrapped it
+  — even after the group has been rotated.
+
+### Cryptographic primitives
+
+- **Envelope encryption** — encrypt data with a DEK, then encrypt (*wrap*) the DEK
+  with a KEK. Only the tiny wrapped DEK needs the KMS; the bulk data is encrypted
+  locally and the master key never touches it.
+- **Wrap / unwrap** — encrypt / decrypt a *key* under another key (as opposed to
+  encrypting data).
+- **AES-256-GCM** — the symmetric cipher used everywhere here. AES with a 256-bit
+  key in GCM mode, which is an **AEAD**.
+- **AEAD (authenticated encryption with associated data)** — encryption that also
+  detects tampering: decryption fails (rather than returning garbage) if the
+  ciphertext, key, or AAD is wrong.
+- **Nonce (a.k.a. IV)** — a "number used once" fed to the cipher. mini-kms uses a
+  fresh random 96-bit nonce per encryption; reusing one with the same key would
+  break GCM, so nonces are never caller-supplied.
+- **GCM tag** — a 128-bit authentication tag GCM appends to the ciphertext; it is
+  what makes tampering detectable.
+- **AAD (additional authenticated data) / "encryption context"** — extra data that
+  is authenticated but *not* encrypted. Decryption only succeeds if the same AAD
+  is supplied, letting you bind a ciphertext to a context (e.g. a filename).
+- **MAC (message authentication code) / HMAC** — a keyed integrity tag. mini-kms
+  HMACs the keystore metadata so offline tampering (e.g. re-enabling a retired
+  key) is detected on load.
+- **Plaintext / ciphertext** — the data before / after encryption.
+- **Crypto-shredding** — destroying a key so all data encrypted under it becomes
+  permanently unrecoverable. This is what `DestroyVersion` does (intentionally
+  irreversible).
+
+### Architecture & operations
+
+- **KMS (key management service)** — a service that creates, stores, and uses keys
+  on a client's behalf without exposing the top-level key material.
+- **Keyring** — the in-memory set of key groups and their KEK versions, all
+  wrapped under the root key.
+- **Keystore** — the on-disk file (`keystore.json`) holding the salt, KDF
+  parameters, a verification token, and the wrapped keyring. Never contains a
+  plaintext key.
+- **Verification token** — a known constant encrypted under the root key, stored in
+  the keystore, used to fail fast on a wrong passphrase.
+- **Rotation** — minting a new active KEK version (`RotateKeyGroup`) or re-deriving
+  the root key under a new passphrase (`change-passphrase`). Old ciphertexts keep
+  decrypting because each names its `kek_id`.
+- **Re-encrypt** — re-wrap an existing ciphertext onto a (possibly different)
+  group's active version *server-side*, without exposing the plaintext.
+- **Data plane** — per-request crypto (`GenerateDataKey`, `Encrypt`, `Decrypt`,
+  `ReEncrypt`, `Health`), guarded by the **API token**.
+- **Control plane** — key management (`Create/Rotate/List/Disable/Enable/Destroy`),
+  guarded by the separate **admin token**.
+- **Principal** — the authenticated identity making a request; the
+  **authorization policy** decides which key groups it may use.
+- **`MasterKeyProvider` / `KeyringManager`** — the two interfaces the request
+  handler depends on (data plane / control plane). Swapping their implementation
+  (e.g. for a remote HSM-backed one) needs no change to request handling.
 
 ---
 

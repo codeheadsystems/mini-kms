@@ -9,6 +9,7 @@ import java.net.Socket;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 
 /**
  * A TCP listener bound to loopback only (127.0.0.1).
@@ -28,13 +29,15 @@ final class TcpTransport implements Closeable {
   private final ServerSocket serverSocket;
   private final ExecutorService executor;
   private final ConnectionHandlerFactory factory;
+  private final Semaphore connectionLimiter;
   private volatile boolean running;
   private Thread acceptThread;
 
-  TcpTransport(final int port, final ExecutorService executor, final ConnectionHandlerFactory factory)
-      throws IOException {
+  TcpTransport(final int port, final ExecutorService executor, final ConnectionHandlerFactory factory,
+               final Semaphore connectionLimiter) throws IOException {
     this.executor = executor;
     this.factory = factory;
+    this.connectionLimiter = connectionLimiter;
     this.serverSocket = new ServerSocket();
     this.serverSocket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
   }
@@ -69,10 +72,17 @@ final class TcpTransport implements Closeable {
         }
         return;
       }
+      if (!connectionLimiter.tryAcquire()) {
+        LOG.log(Level.WARNING, () -> "connection limit reached; rejecting " + socket.getRemoteSocketAddress());
+        closeQuietly(socket);
+        continue;
+      }
       try {
         final String peer = "tcp:" + socket.getRemoteSocketAddress();
-        executor.execute(factory.create(socket.getInputStream(), socket.getOutputStream(), peer, socket));
+        executor.execute(factory.create(socket.getInputStream(), socket.getOutputStream(), peer, socket,
+            connectionLimiter::release));
       } catch (final IOException | RuntimeException e) {
+        connectionLimiter.release(); // acquired above, but the handler never took ownership
         LOG.log(Level.WARNING, () -> "failed to start handler: " + e.getMessage());
         closeQuietly(socket);
       }

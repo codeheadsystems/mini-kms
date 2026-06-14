@@ -154,6 +154,37 @@ class LocalKeyringTest {
     assertTrue(fileBytes.length > 0);
   }
 
+  @Test
+  void tamperingWithAVersionStatusIsDetectedOnLoad() throws Exception {
+    final Path keystore = tempDir.resolve("keystore.json");
+    try (LocalKeyring keyring = LocalKeyring.bootstrap(keystore, "pw".toCharArray(), FAST)) {
+      keyring.rotateKeyGroup("default");        // v1 -> ENABLED, v2 ACTIVE
+      keyring.disableVersion("default", 1);     // v1 -> DISABLED (e.g. retired as compromised)
+    }
+    // An attacker with file access flips the retired key back to ENABLED.
+    final String json = Files.readString(keystore);
+    assertTrue(json.contains("DISABLED"));
+    Files.writeString(keystore, json.replace("DISABLED", "ENABLED"));
+    // The integrity MAC no longer matches the metadata, so the keystore is refused.
+    final KeyringException e = assertThrows(KeyringException.class,
+        () -> LocalKeyring.bootstrap(keystore, "pw".toCharArray(), FAST));
+    assertTrue(e.getMessage().contains("integrity"), e.getMessage());
+  }
+
+  @Test
+  void strippingTheIntegrityTagIsRejected() throws Exception {
+    final Path keystore = tempDir.resolve("keystore.json");
+    LocalKeyring.bootstrap(keystore, "pw".toCharArray(), FAST).close();
+    // Remove the macBase64 field entirely; an unauthenticated keystore must not load.
+    final com.fasterxml.jackson.databind.ObjectMapper mapper =
+        new com.fasterxml.jackson.databind.ObjectMapper();
+    final com.fasterxml.jackson.databind.node.ObjectNode node =
+        (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(Files.readAllBytes(keystore));
+    node.remove("macBase64");
+    Files.write(keystore, mapper.writeValueAsBytes(node));
+    assertThrows(KeyringException.class, () -> LocalKeyring.bootstrap(keystore, "pw".toCharArray(), FAST));
+  }
+
   private static boolean contains(final byte[] haystack, final byte[] needle) {
     if (needle.length == 0) {
       return false;

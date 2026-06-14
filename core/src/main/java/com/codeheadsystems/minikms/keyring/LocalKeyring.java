@@ -103,6 +103,7 @@ public final class LocalKeyring implements MasterKeyProvider, KeyringManager {
     final byte[] rootKey = Argon2KeyDeriver.deriveMasterKey(passphrase, salt, metadata.argonSettings());
     final LocalKeyring keyring = new LocalKeyring(keystorePath, metadata.argonSettings(), rootKey, salt);
     keyring.verifyRootKey(metadata);
+    keyring.verifyIntegrity(metadata);
     keyring.loadGroups(metadata);
     return keyring;
   }
@@ -122,6 +123,16 @@ public final class LocalKeyring implements MasterKeyProvider, KeyringManager {
   private WrongPassphraseException failPassphrase() {
     Arrays.fill(rootKey, (byte) 0);
     return new WrongPassphraseException("incorrect passphrase: keystore verification failed");
+  }
+
+  /** Authenticate the metadata before trusting any plaintext field (statuses, layout, etc.). */
+  private void verifyIntegrity(final KeystoreMetadata metadata) {
+    try {
+      KeystoreIntegrity.verify(metadata, rootKey);
+    } catch (final KeyringException e) {
+      Arrays.fill(rootKey, (byte) 0);
+      throw e;
+    }
   }
 
   private void loadGroups(final KeystoreMetadata metadata) {
@@ -345,7 +356,7 @@ public final class LocalKeyring implements MasterKeyProvider, KeyringManager {
     });
 
     final byte[] verificationToken = aesGcm.encrypt(AesGcm.toKey(rootKey), VERIFICATION_CONSTANT, null);
-    final KeystoreMetadata metadata = new KeystoreMetadata(
+    final KeystoreMetadata unsigned = new KeystoreMetadata(
         KeystoreMetadata.FORMAT_VERSION_2,
         KeystoreMetadata.KDF_ARGON2ID,
         argonSettings.memoryKiB(),
@@ -353,8 +364,11 @@ public final class LocalKeyring implements MasterKeyProvider, KeyringManager {
         argonSettings.parallelism(),
         Base64.getEncoder().encodeToString(salt),
         Base64.getEncoder().encodeToString(verificationToken),
-        groupMetas);
-    Keystore.save(keystorePath, metadata);
+        groupMetas,
+        null);
+    // Sign the whole document so offline tampering of plaintext metadata is detected on load.
+    final KeystoreMetadata signed = unsigned.withMac(KeystoreIntegrity.computeMac(unsigned, rootKey));
+    Keystore.save(keystorePath, signed);
   }
 
   @Override

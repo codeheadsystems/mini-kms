@@ -26,6 +26,10 @@ import java.util.List;
  * @param saltBase64                 per-install salt (base64).
  * @param rootVerificationTokenBase64 verification token (base64), encrypted under the root key.
  * @param keyGroups                  the keyring.
+ * @param macBase64                  HMAC over all other fields, keyed by a root-derived key
+ *                                   ({@link KeystoreIntegrity}); detects offline tampering of the
+ *                                   otherwise-plaintext metadata. {@code null} only on the transient
+ *                                   value used to compute the MAC itself.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record KeystoreMetadata(
@@ -36,7 +40,8 @@ public record KeystoreMetadata(
     int argonParallelism,
     String saltBase64,
     String rootVerificationTokenBase64,
-    List<KeyGroupMetadata> keyGroups) {
+    List<KeyGroupMetadata> keyGroups,
+    String macBase64) {
 
   /** Current keystore file format version. */
   public static final int FORMAT_VERSION_2 = 2;
@@ -47,5 +52,11 @@ public record KeystoreMetadata(
   /** @return the Argon2 cost parameters for the root key. */
   public Argon2Settings argonSettings() {
     return new Argon2Settings(argonMemoryKiB, argonIterations, argonParallelism);
+  }
+
+  /** @return a copy of this metadata carrying the given integrity tag. */
+  public KeystoreMetadata withMac(final String mac) {
+    return new KeystoreMetadata(formatVersion, kdf, argonMemoryKiB, argonIterations,
+        argonParallelism, saltBase64, rootVerificationTokenBase64, keyGroups, mac);
   }
 }

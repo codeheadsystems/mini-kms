@@ -8,6 +8,8 @@ import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.Semaphore;
 
 /**
  * The socket daemon: binds the enabled transports and dispatches each connection
@@ -29,6 +31,8 @@ public final class KmsServer implements Closeable {
   private final ServerConfig config;
   private final ConnectionHandlerFactory factory;
   private final ExecutorService executor;
+  private final ScheduledThreadPoolExecutor idleWatchdog;
+  private final Semaphore connectionLimiter;
   private TcpTransport tcpTransport;
   private UnixSocketTransport unixTransport;
 
@@ -38,7 +42,17 @@ public final class KmsServer implements Closeable {
    */
   public KmsServer(final ServerConfig config, final KmsRequestHandler requestHandler) {
     this.config = config;
-    this.factory = new ConnectionHandlerFactory(new ProtocolCodec(), requestHandler, config.maxFrameBytes());
+    this.connectionLimiter = new Semaphore(config.maxConnections());
+    this.idleWatchdog = new ScheduledThreadPoolExecutor(1, runnable -> {
+      final Thread thread = new Thread(runnable, "minikms-idle-watchdog");
+      thread.setDaemon(true);
+      return thread;
+    });
+    // Cancelled timeouts (the common case: a request arrived in time) are purged immediately,
+    // so the watchdog queue cannot grow with one stale entry per served request.
+    this.idleWatchdog.setRemoveOnCancelPolicy(true);
+    this.factory = new ConnectionHandlerFactory(new ProtocolCodec(), requestHandler,
+        config.maxFrameBytes(), idleWatchdog, config.idleTimeoutMillis());
     this.executor = Executors.newVirtualThreadPerTaskExecutor();
   }
 
@@ -49,11 +63,11 @@ public final class KmsServer implements Closeable {
    */
   public void start() throws IOException {
     if (config.tcpEnabled()) {
-      tcpTransport = new TcpTransport(config.tcpPort(), executor, factory);
+      tcpTransport = new TcpTransport(config.tcpPort(), executor, factory, connectionLimiter);
       tcpTransport.start();
     }
     if (config.unixEnabled()) {
-      unixTransport = new UnixSocketTransport(config.unixSocketPath(), executor, factory);
+      unixTransport = new UnixSocketTransport(config.unixSocketPath(), executor, factory, connectionLimiter);
       unixTransport.start();
     }
   }
@@ -68,6 +82,7 @@ public final class KmsServer implements Closeable {
     closeQuietly(tcpTransport, "tcp");
     closeQuietly(unixTransport, "unix");
     executor.shutdownNow();
+    idleWatchdog.shutdownNow();
     LOG.log(Level.INFO, "server stopped");
   }
 
