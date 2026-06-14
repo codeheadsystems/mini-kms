@@ -3,9 +3,9 @@
 # Everything else (AES-GCM, SecureRandom) uses the JDK's built-in JCA.
 
 [versions]
-bouncycastle = "1.81"
-jackson = "2.18.2"
-junit-jupiter = "6.0.1"
+bouncycastle = "1.84"
+jackson = "2.22.0"
+junit-jupiter = "6.1.0"
 
 [libraries]
 # Bouncy Castle provider: the Argon2id KDF (Argon2BytesGenerator) lives here.
